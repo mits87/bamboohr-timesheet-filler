@@ -1,0 +1,225 @@
+#!/usr/bin/php
+<?php
+
+define('COOKIE_PATH', '/tmp/baboohr_cookie.txt');
+define('SESSION_PATH', '/tmp/baboohr_session.txt');
+define('DOMAIN_NAME', '');
+define('USER_AGENT', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/73.0.3683.86 Safari/537.36');
+
+$workTimes = [
+    [
+        ['08:55', '12:45'],
+        ['13:10', '18:00'],
+    ],
+    [
+        ['09:00', '12:45'],
+        ['13:10', '18:00'],
+    ],
+    [
+        ['09:15', '12:45'],
+        ['13:15', '18:10'],
+    ],
+    [
+        ['09:05', '12:45'],
+        ['13:15', '18:00'],
+    ],
+];
+
+$headers = ['upgrade-insecure-requests: 1'];
+
+system('clear');
+
+$ch = curl_init();
+curl_setopt($ch, CURLOPT_URL, 'https://' . DOMAIN_NAME . '/home/');
+curl_setopt($ch, CURLOPT_USERAGENT, USER_AGENT);
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+curl_setopt($ch, CURLOPT_COOKIEJAR, COOKIE_PATH);
+curl_setopt($ch, CURLOPT_COOKIEFILE, COOKIE_PATH);
+curl_setopt($ch, CURLOPT_ENCODING, 'gzip,deflate,br');
+curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+
+$response = curl_exec($ch);
+
+if (curl_errno($ch)) {
+    die(curl_error($ch));
+}
+
+if (preg_match('/var SESSION_USER=([^;]+);/', $response, $matches)) {
+    $session = json_decode($matches[1], true);
+}
+
+curl_close($ch);
+
+if (empty($session['employeeId'])) {
+    echo 'E-mail: ';
+    $username = rtrim(fgets(STDIN), PHP_EOL);
+
+    system('stty -echo');
+
+    echo 'Password: ';
+    $password = rtrim(fgets(STDIN), PHP_EOL);
+
+    system('stty echo');
+    system('clear');
+
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, 'https://' . DOMAIN_NAME . '/login.php');
+    curl_setopt($ch, CURLOPT_USERAGENT, USER_AGENT);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_COOKIEJAR, COOKIE_PATH);
+    curl_setopt($ch, CURLOPT_COOKIEFILE, COOKIE_PATH);
+    curl_setopt($ch, CURLOPT_ENCODING, 'gzip,deflate,br');
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+
+    $response = curl_exec($ch);
+
+    if (curl_errno($ch)) {
+        die(curl_error($ch));
+    }
+
+    if (empty($response)) {
+        die("Response from https://" . DOMAIN_NAME . "/login.php is empty!");
+    }
+
+    if (preg_match('/var CSRF_TOKEN = "([^"]+)";/', $response, $matches)) {
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_COOKIEJAR, COOKIE_PATH);
+        curl_setopt($ch, CURLOPT_COOKIEFILE, COOKIE_PATH);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query([
+            'tz'        => 'Europe/Berlin',
+            'login'     => 'Log in',
+            'username'  => $username,
+            'password'  => $password,
+            'CSRFToken' => $matches[1],
+        ]));
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+
+        $response = curl_exec($ch);
+
+        if (curl_errno($ch)) {
+            die(curl_error($ch));
+        }
+
+        if (preg_match('/var SESSION_USER=([^;]+);/', $response, $matches)) {
+            $session = json_decode($matches[1], true);
+        } else {
+            exit('Authenticaton failed! Wrong email or password.');
+        }
+    } else{
+        die('The CSRF token not found in Login Page!');
+    }
+    curl_close($ch);
+}
+
+if (empty($session['employeeId'])) {
+    die('Employee ID couldn\'t be found!');
+}
+
+$ch = curl_init();
+
+curl_setopt($ch, CURLOPT_URL, 'https://' . DOMAIN_NAME . '/employees/timesheet/?id=' . $session['employeeId']);
+curl_setopt($ch, CURLOPT_USERAGENT, USER_AGENT);
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+curl_setopt($ch, CURLOPT_COOKIEJAR, COOKIE_PATH);
+curl_setopt($ch, CURLOPT_COOKIEFILE, COOKIE_PATH);
+curl_setopt($ch, CURLOPT_ENCODING, 'gzip,deflate,br');
+curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+
+$response = curl_exec($ch);
+
+if (curl_errno($ch)) {
+    die(curl_error($ch));
+}
+
+curl_close($ch);
+
+if (empty($response)) {
+    die("Response from https://" . DOMAIN_NAME . "/employees/timesheet/?id=" . $session['employeeId'] . " is empty!");
+}
+
+if (preg_match('/var CSRF_TOKEN = "([^"]+)";/', $response, $matches)) {
+    $token = $matches[1];
+
+    if (preg_match('/<script type="application\/json" id="js-timesheet-data">([^<]+)<\/script>/', $response, $matches)) {
+        $timesheet = json_decode($matches[1], true);
+        $entries = [];
+
+        if (!empty($timesheet['timesheet']['dailyDetails'])) {
+            $n = 0;
+
+            foreach ($timesheet['timesheet']['dailyDetails'] as $date => $details) {
+                if (strtotime($date) > time()) break;
+                if (date('N', strtotime($date)) >= 6 || !empty($details['clockEntries']) || !empty($details['timeOff']) || !empty($details['holidays'])) continue;
+
+                if (!isset($workTimes[$n])) {
+                    $n = 0;
+                }
+
+                $entries[] = array_map(function($entry) use ($date, $session) {
+                    return [
+                        'id' => null,
+                        'trackingId' => 1,
+                        'employeeId' => $session['employeeId'],
+                        'date' => $date,
+                        'start' => $entry[0],
+                        'end' => $entry[1]
+                    ];
+                }, $workTimes[$n]);
+
+                $n++;
+            }
+        }
+
+        if (!empty($entries)) {
+            echo 'Timesheet will be complete with:' . "\n\n";
+
+            foreach ($entries as $entry) {
+                echo $entry[0]['date'] . ":\n";
+
+                foreach ($entry as $time) {
+                    echo "  " . $time['start'] . " - " . $time['end'] . "\n";
+                }
+                echo "\n";
+            }
+
+            echo 'Are you sure you want to continue? [Y/n]: ';
+
+            if (trim(fgets(fopen('php://stdin', 'r'))) != 'Y'){
+                exit("Aborted!\n");
+            }
+
+            $entries = ['entries' => array_merge(...$entries)];
+
+            $ch = curl_init();
+
+            curl_setopt($ch, CURLOPT_URL, 'https://' . DOMAIN_NAME . '/timesheet/clock/entries');
+
+            curl_setopt($ch, CURLOPT_USERAGENT, USER_AGENT);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            curl_setopt($ch, CURLOPT_COOKIEJAR, COOKIE_PATH);
+            curl_setopt($ch, CURLOPT_COOKIEFILE, COOKIE_PATH);
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($entries));
+            curl_setopt($ch, CURLOPT_ENCODING, 'gzip,deflate');
+            curl_setopt($ch, CURLOPT_HTTPHEADER, array_merge($headers, [
+                'X-Csrf-Token: ' . $token,
+                'Content-Type: application/json;charset=UTF-8',
+            ]));
+
+            $response = curl_exec($ch);
+
+            if (curl_errno($ch)) {
+                die(curl_error($ch));
+            }
+        }
+        echo 'Done!';
+    }
+} else{
+    die('The CSRF token not found!');
+}
